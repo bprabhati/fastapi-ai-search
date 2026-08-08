@@ -1,0 +1,32 @@
+{
+  "family": "fastapi-rag-app-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "containerDefinitions": [
+    {
+      "name": "fastapi-rag-app",
+      "image": "REPLACE_WITH_ECR_IMAGE",
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "essential": true,
+      "environment": [
+        { "name": "DATABASE_URL", "value": "${DATABASE_URL}" },
+        { "name": "OPENAI_API_KEY", "value": "${OPENAI_API_KEY}" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/fastapi-rag-app",
+          "awslogs-region": "REPLACE_WITH_AWS_REGION",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

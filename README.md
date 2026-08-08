@@ -1,6 +1,6 @@
-# FastAPI RAG App
+# fastapi-ai-search
 
-A production-style FastAPI application with PostgreSQL, Docker, and a basic GenAI chatbot endpoint.
+A production-style FastAPI application with PostgreSQL, Docker, and OpenAI integration.
 
 ## Local setup
 
@@ -12,19 +12,24 @@ A production-style FastAPI application with PostgreSQL, Docker, and a basic GenA
    poetry install
    ```
 
-2. Create a `.env` file and set your OpenAI API key:
+2. Create a `.env` file in the project root and set your environment values:
 
    ```env
    OPENAI_API_KEY=your_openai_api_key_here
+   DATABASE_URL=postgresql://postgres:postgres@db:5432/fastapi_chat
    ```
 
-3. Start services:
+3. Start local services:
 
    ```powershell
    docker compose up --build
    ```
 
-4. Visit `http://localhost:8000/docs` for API docs.
+4. Open the API docs:
+
+   ```text
+   http://localhost:8000/docs
+   ```
 
 ## Endpoints
 
@@ -33,7 +38,43 @@ A production-style FastAPI application with PostgreSQL, Docker, and a basic GenA
 - `GET /users/{user_id}`
 - `POST /chat`
 
-## Notes
+## GitHub CI/CD
 
-- The app uses PostgreSQL in Docker and a basic OpenAI chatbot integration.
-- `DATABASE_URL` is configured in `docker-compose.yml`.
+This repository includes a GitHub Actions workflow at `.github/workflows/deploy.yml`.
+The workflow runs on push to `main` and performs:
+
+- checkout
+- install dependencies
+- run tests
+- build Docker image
+- push image to Amazon ECR
+- deploy to Amazon ECS
+
+### GitHub secrets required
+
+- `AWS_REGION`
+- `AWS_ROLE_TO_ASSUME`
+- `ECR_REGISTRY`
+- `ECR_REPOSITORY`
+- `ECS_CLUSTER`
+- `ECS_SERVICE`
+
+## AWS deployment overview
+
+Recommended architecture:
+
+- AWS ECR for Docker image registry
+- AWS ECS Fargate for container deployment
+- AWS RDS PostgreSQL for the database
+- AWS CloudWatch Logs for monitoring
+- AWS Secrets Manager or ECS environment variables for secrets
+
+## ECS configuration
+
+The sample task definition is in `ecs/task-definition.json`.
+Update the following values before use:
+
+- `REPLACE_WITH_ECR_IMAGE`
+- `REPLACE_WITH_AWS_REGION`
+
+Then use the task definition in your ECS service.
