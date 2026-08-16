@@ -14,14 +14,23 @@ client = OpenAI(api_key=OPENAI_API_KEY) if not USE_MOCK_AI else None
 EMBEDDING_DIMENSIONS = 1536
 
 
-def generate_response(prompt: str) -> str:
+def generate_response(prompt: str, context: str | None = None) -> str:
     if USE_MOCK_AI:
+        if context:
+            return f"[mock reply] Using context: {context[:60]}... | You said: {prompt}"
         return f"[mock reply] You said: {prompt}"
+
+    system_content = "You are a helpful assistant for a production-style chatbot API."
+    if context:
+        system_content += (
+            "\n\nUse the following retrieved context to answer the user's question. "
+            "If the context is not relevant, answer normally.\n\nContext:\n" + context
+        )
 
     response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[
-            {"role": "system", "content": "You are a helpful assistant for a production-style chatbot API."},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": prompt},
         ],
         max_tokens=300,

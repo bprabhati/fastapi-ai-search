@@ -74,7 +74,11 @@ def chat(request: schemas.ChatRequest, db: Session = Depends(get_db)):
     else:
         user = None
 
-    reply = ai.generate_response(request.prompt)
+    query_embedding = ai.generate_embedding(request.prompt)
+    similar_chunks = crud.search_similar_chunks(db, query_embedding)
+    context = "\n\n".join(chunk.content for chunk in similar_chunks) if similar_chunks else None
+
+    reply = ai.generate_response(request.prompt, context=context)
     crud.create_chat_message(db, user.id if user else None, request.prompt, reply)
 
     return schemas.ChatResponse(reply=reply)

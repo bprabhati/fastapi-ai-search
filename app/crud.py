@@ -46,3 +46,12 @@ def create_document_chunk(db: Session, document_id: int, chunk_index: int, conte
     db.commit()
     db.refresh(chunk)
     return chunk
+
+
+def search_similar_chunks(db: Session, query_embedding: list[float], top_k: int = 5):
+    return (
+        db.query(models.DocumentChunk)
+        .order_by(models.DocumentChunk.embedding.cosine_distance(query_embedding))
+        .limit(top_k)
+        .all()
+    )
