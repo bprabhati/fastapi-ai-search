@@ -48,6 +48,23 @@ def read_user(user_id: int, db: Session = Depends(get_db)):
     return user
 
 
+@app.post("/documents", response_model=schemas.DocumentRead, status_code=status.HTTP_201_CREATED)
+def upload_document(document: schemas.DocumentCreate, db: Session = Depends(get_db)):
+    db_document = crud.create_document(db, document.title, document.content, document.source_url, document.user_id)
+
+    chunks = ai.chunk_text(document.content)
+    for index, chunk_content in enumerate(chunks):
+        embedding = ai.generate_embedding(chunk_content)
+        crud.create_document_chunk(db, db_document.id, index, chunk_content, embedding)
+
+    return schemas.DocumentRead(
+        id=db_document.id,
+        title=db_document.title,
+        source_url=db_document.source_url,
+        chunk_count=len(chunks),
+    )
+
+
 @app.post("/chat", response_model=schemas.ChatResponse)
 def chat(request: schemas.ChatRequest, db: Session = Depends(get_db)):
     if request.user_id is not None:

@@ -24,3 +24,17 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
+
+
+class DocumentCreate(BaseModel):
+    title: str
+    content: str
+    source_url: Optional[str] = None
+    user_id: Optional[int] = None
+
+
+class DocumentRead(BaseModel):
+    id: int
+    title: str
+    source_url: Optional[str] = None
+    chunk_count: int

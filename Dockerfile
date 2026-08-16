@@ -5,13 +5,16 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
+    gcc \
+    git \
  && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml poetry.lock* /app/
+COPY pyproject.toml /app/
 COPY . /app
 
 RUN pip install --no-cache-dir poetry && \
     poetry config virtualenvs.create false && \
+    poetry lock --no-interaction && \
     poetry install --no-interaction --no-ansi
 
 
