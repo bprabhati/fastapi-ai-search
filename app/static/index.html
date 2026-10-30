@@ -25,14 +25,12 @@
           </span>
         </div>
 
-        <div class="sidebar-tip">
-          <span class="tip-icon" aria-hidden="true">i</span>
-          <p>Upload a PDF or Word document, then ask a question about its contents.</p>
-        </div>
+        <div class="sidebar-label session-label">CONVERSATIONS</div>
+        <ul class="session-list" id="session-list"></ul>
 
         <div class="sidebar-footer">
-          <span class="status-dot" aria-hidden="true"></span>
-          <span>Connected to your local app</span>
+          <span class="status-dot offline" id="status-dot" aria-hidden="true"></span>
+          <span id="connection-status">Connecting...</span>
         </div>
       </aside>
 
@@ -45,6 +43,7 @@
           <span class="topbar-label">DOCUMENT ASSISTANT</span>
           <div class="topbar-actions">
             <span class="profile-name" id="profile-name"></span>
+            <button class="logout-button" id="new-chat-button" type="button" hidden>New chat</button>
             <button class="logout-button" id="logout-button" type="button" hidden>Log out</button>
           </div>
         </header>
@@ -116,6 +115,9 @@
             <textarea id="prompt-input" rows="1" placeholder="Ask a question about your documents..." required></textarea>
             <button class="send-button" id="send-button" type="submit" aria-label="Send message">
               <span>Send</span><span aria-hidden="true">↑</span>
+            </button>
+            <button class="send-button stop-button" id="stop-button" type="button" aria-label="Stop answer" hidden>
+              <span>Stop</span><span aria-hidden="true">■</span>
             </button>
           </form>
           <p class="disclaimer">Check important details against the original document.</p>

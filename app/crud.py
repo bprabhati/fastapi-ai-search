@@ -33,22 +33,74 @@ def create_user(db: Session, user: schemas.UserCreate):
     return db_user
 
 
-def create_chat_message(db: Session, user_id: int | None, prompt: str, response: str):
-    chat = models.ChatMessage(user_id=user_id, prompt=prompt, response=response)
+def create_chat_session(db: Session, user_id: int, title: str):
+    session = models.ChatSession(user_id=user_id, title=title)
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+def get_chat_session(db: Session, session_id: int, user_id: int):
+    return (
+        db.query(models.ChatSession)
+        .filter(models.ChatSession.id == session_id, models.ChatSession.user_id == user_id)
+        .first()
+    )
+
+
+def list_chat_sessions(db: Session, user_id: int):
+    return (
+        db.query(models.ChatSession)
+        .filter(models.ChatSession.user_id == user_id)
+        .order_by(models.ChatSession.id.desc())
+        .all()
+    )
+
+
+def list_session_messages(db: Session, session_id: int):
+    return (
+        db.query(models.ChatMessage)
+        .filter(models.ChatMessage.session_id == session_id)
+        .order_by(models.ChatMessage.id)
+        .all()
+    )
+
+
+def delete_chat_session(db: Session, session: models.ChatSession) -> None:
+    db.delete(session)
+    db.commit()
+
+
+def create_chat_message(
+    db: Session,
+    user_id: int | None,
+    prompt: str,
+    response: str,
+    session_id: int | None = None,
+):
+    chat = models.ChatMessage(
+        user_id=user_id,
+        prompt=prompt,
+        response=response,
+        session_id=session_id,
+    )
     db.add(chat)
     db.commit()
     db.refresh(chat)
     return chat
 
 
-def get_recent_chat_history(db: Session, user_id: int, limit: int = 2) -> list[dict[str, str]]:
-    rows = (
-        db.query(models.ChatMessage)
-        .filter(models.ChatMessage.user_id == user_id)
-        .order_by(models.ChatMessage.id.desc())
-        .limit(limit)
-        .all()
-    )
+def get_recent_chat_history(
+    db: Session,
+    user_id: int,
+    limit: int = 2,
+    session_id: int | None = None,
+) -> list[dict[str, str]]:
+    query = db.query(models.ChatMessage).filter(models.ChatMessage.user_id == user_id)
+    if session_id is not None:
+        query = query.filter(models.ChatMessage.session_id == session_id)
+    rows = query.order_by(models.ChatMessage.id.desc()).limit(limit).all()
     history = []
     for row in reversed(rows):
         history.extend(

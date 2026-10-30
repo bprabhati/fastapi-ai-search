@@ -1,11 +1,13 @@
+import asyncio
 from pathlib import Path
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi import File, UploadFile
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from jwt import InvalidTokenError
+from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -52,6 +54,13 @@ app = FastAPI(
 app.mount("/static", RevalidatedStaticFiles(directory=Path(__file__).parent / "static"), name="static")
 bearer_scheme = HTTPBearer(auto_error=False)
 FOLLOW_UP_MAX_WORDS = 6
+CHAT_TITLE_MAX_CHARS = 60
+SOCKET_AUTH_TIMEOUT_SECONDS = 10
+SOCKET_UNAUTHORIZED = 4401
+NO_CONTEXT_REPLY = (
+    "I couldn't find anything to answer from. Upload a document first, "
+    "or choose a different one under “Search in”."
+)
 
 
 @app.get("/", include_in_schema=False)
@@ -243,22 +252,16 @@ def _retrieval_query(prompt: str, history: list[dict[str, str]]) -> str:
     return prompt
 
 
-@app.post("/chat", response_model=schemas.ChatResponse)
-def chat(
-    request: schemas.ChatRequest,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    history = crud.get_recent_chat_history(db, current_user.id)
-    try:
-        query_embedding = ai.generate_embedding(_retrieval_query(request.prompt, history))
-    except ai.OllamaTimeoutError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail=str(exc),
-        ) from exc
+def _retrieve_context(
+    db: Session,
+    user_id: int,
+    prompt: str,
+    history: list[dict[str, str]],
+    document_id: int | None,
+) -> tuple[str | None, list[str]]:
+    query_embedding = ai.generate_embedding(_retrieval_query(prompt, history))
     similar_chunks = crud.search_similar_chunks(
-        db, query_embedding, current_user.id, document_id=request.document_id
+        db, query_embedding, user_id, document_id=document_id
     )
     document_ordered_chunks = sorted(
         similar_chunks,
@@ -280,16 +283,35 @@ def chat(
         if similar_chunks
         else None
     )
+    titles = [
+        chunk.document.title
+        for chunk in document_ordered_chunks
+        if getattr(chunk, "document", None) is not None
+    ]
+    return context, list(dict.fromkeys(titles))
 
+
+@app.post("/chat", response_model=schemas.ChatResponse)
+def chat(
+    request: schemas.ChatRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    history = crud.get_recent_chat_history(db, current_user.id)
     user_id = current_user.id
+    try:
+        context, _ = _retrieve_context(db, user_id, request.prompt, history, request.document_id)
+    except ai.OllamaTimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=str(exc),
+        ) from exc
+
     # Don't keep a DB connection checked out during the model call.
     db.close()
 
     if context is None:
-        reply = (
-            "I couldn't find anything to answer from. Upload a document first, "
-            "or choose a different one under “Search in”."
-        )
+        reply = NO_CONTEXT_REPLY
     else:
         try:
             reply = ai.generate_response(request.prompt, context=context, history=history)
@@ -313,3 +335,170 @@ def agent_chat(
     crud.create_chat_message(db, current_user.id, request.prompt, reply)
 
     return schemas.ChatResponse(reply=reply)
+
+
+def _get_owned_session(db: Session, session_id: int, user_id: int) -> models.ChatSession:
+    session = crud.get_chat_session(db, session_id, user_id)
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found.")
+    return session
+
+
+@app.get("/sessions", response_model=list[schemas.ChatSessionRead])
+def list_sessions(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    return crud.list_chat_sessions(db, current_user.id)
+
+
+@app.get("/sessions/{session_id}/messages", response_model=list[schemas.ChatMessageRead])
+def list_session_messages(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _get_owned_session(db, session_id, current_user.id)
+    return crud.list_session_messages(db, session_id)
+
+
+@app.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_session(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    crud.delete_chat_session(db, _get_owned_session(db, session_id, current_user.id))
+
+
+def _socket_user_id(token: str) -> int | None:
+    try:
+        user_id = decode_access_token(token)
+    except InvalidTokenError:
+        return None
+    db = SessionLocal()
+    try:
+        return user_id if crud.get_user(db, user_id) is not None else None
+    finally:
+        db.close()
+
+
+async def _authenticate_socket(websocket: WebSocket) -> int | None:
+    # Browsers can't set headers on a WebSocket, and a token in the URL would end up in
+    # server logs, so the token is sent as the first message instead.
+    try:
+        raw_message = await asyncio.wait_for(websocket.receive_text(), SOCKET_AUTH_TIMEOUT_SECONDS)
+        auth = schemas.SocketAuth.model_validate_json(raw_message)
+    except (TimeoutError, ValidationError):
+        return None
+    return await asyncio.to_thread(_socket_user_id, auth.token)
+
+
+def _prepare_socket_answer(
+    user_id: int,
+    message: schemas.SocketMessage,
+) -> tuple[list[dict[str, str]], str | None, list[str]]:
+    db = SessionLocal()
+    try:
+        history = []
+        if message.session_id is not None:
+            if crud.get_chat_session(db, message.session_id, user_id) is None:
+                raise ValueError("That conversation no longer exists.")
+            history = crud.get_recent_chat_history(db, user_id, session_id=message.session_id)
+        context, sources = _retrieve_context(
+            db, user_id, message.prompt, history, message.document_id
+        )
+        return history, context, sources
+    finally:
+        db.close()
+
+
+def _save_socket_answer(user_id: int, message: schemas.SocketMessage, reply: str) -> int:
+    db = SessionLocal()
+    try:
+        session_id = message.session_id
+        if session_id is None:
+            title = message.prompt[:CHAT_TITLE_MAX_CHARS]
+            session_id = crud.create_chat_session(db, user_id, title).id
+        crud.create_chat_message(db, user_id, message.prompt, reply, session_id=session_id)
+        return session_id
+    finally:
+        db.close()
+
+
+async def _answer_on_socket(
+    websocket: WebSocket,
+    user_id: int,
+    message: schemas.SocketMessage,
+) -> None:
+    reply = ""
+    stopped = False
+    try:
+        history, context, sources = await asyncio.to_thread(
+            _prepare_socket_answer, user_id, message
+        )
+        if context is None:
+            reply = NO_CONTEXT_REPLY
+            await websocket.send_json({"type": "token", "text": reply})
+        else:
+            await websocket.send_json({"type": "sources", "titles": sources})
+            tokens = ai.stream_response(message.prompt, context=context, history=history)
+            # next() blocks while the model works, so it runs in a thread to keep the
+            # server free. Stop cancels this wait straight away.
+            while (token := await asyncio.to_thread(next, tokens, None)) is not None:
+                reply += token
+                await websocket.send_json({"type": "token", "text": token})
+    except asyncio.CancelledError:
+        stopped = True
+    except (ValueError, RuntimeError, TimeoutError) as exc:
+        await websocket.send_json({"type": "error", "message": str(exc)})
+        return
+
+    session_id = message.session_id
+    if reply:
+        session_id = await asyncio.to_thread(_save_socket_answer, user_id, message, reply)
+    await websocket.send_json(
+        {"type": "stopped" if stopped else "done", "session_id": session_id}
+    )
+
+
+@app.websocket("/ws/chat")
+async def chat_socket(websocket: WebSocket):
+    await websocket.accept()
+    answer_task = None
+    try:
+        user_id = await _authenticate_socket(websocket)
+        if user_id is None:
+            await websocket.close(code=SOCKET_UNAUTHORIZED)
+            return
+        await websocket.send_json({"type": "ready"})
+
+        while True:
+            raw_message = await websocket.receive_text()
+            try:
+                message = schemas.SocketMessage.model_validate_json(raw_message)
+            except ValidationError:
+                await websocket.send_json(
+                    {"type": "error", "message": "That message could not be read."}
+                )
+                continue
+
+            answering = answer_task is not None and not answer_task.done()
+            if message.type == "stop":
+                if answering:
+                    answer_task.cancel()
+            elif answering:
+                await websocket.send_json(
+                    {"type": "error", "message": "Please wait for the current answer to finish."}
+                )
+            elif not message.prompt.strip():
+                await websocket.send_json({"type": "error", "message": "Please type a question."})
+            else:
+                answer_task = asyncio.create_task(_answer_on_socket(websocket, user_id, message))
+    except WebSocketDisconnect:
+        pass
+    finally:
+        # The browser left, so stop the model work. Exceptions here only mean sending failed.
+        if answer_task is not None:
+            answer_task.cancel()
+            await asyncio.gather(answer_task, return_exceptions=True)

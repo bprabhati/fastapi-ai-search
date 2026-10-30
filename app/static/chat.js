@@ -3,6 +3,11 @@ const messages = document.querySelector("#messages");
 const chatForm = document.querySelector("#chat-form");
 const promptInput = document.querySelector("#prompt-input");
 const sendButton = document.querySelector("#send-button");
+const stopButton = document.querySelector("#stop-button");
+const newChatButton = document.querySelector("#new-chat-button");
+const sessionList = document.querySelector("#session-list");
+const statusDot = document.querySelector("#status-dot");
+const connectionStatus = document.querySelector("#connection-status");
 const uploadForm = document.querySelector("#upload-form");
 const fileInput = document.querySelector("#file-input");
 const fileLabel = document.querySelector("#file-label");
@@ -27,6 +32,12 @@ const authToggleCopy = document.querySelector("#auth-toggle-copy");
 const authToggleButton = document.querySelector("#auth-toggle-button");
 let accessToken = sessionStorage.getItem("access_token");
 let isRegisterMode = false;
+let socket = null;
+let socketReady = false;
+let reconnectTimer = null;
+let activeMessage = null;
+let activeSources = [];
+let currentSessionId = null;
 
 function setAuthenticated(user, token) {
   accessToken = token;
@@ -35,17 +46,25 @@ function setAuthenticated(user, token) {
   profileName.textContent = user.name;
   profileName.hidden = false;
   logoutButton.hidden = false;
+  newChatButton.hidden = false;
   authError.textContent = "";
   refreshDocuments();
+  refreshSessions();
+  connectSocket();
 }
 
 function clearAuthentication() {
   accessToken = null;
   sessionStorage.removeItem("access_token");
+  disconnectSocket();
+  finishAnswer();
   mainPanel.classList.remove("authenticated");
   profileName.textContent = "";
   profileName.hidden = true;
   logoutButton.hidden = true;
+  newChatButton.hidden = true;
+  currentSessionId = null;
+  sessionList.replaceChildren();
   messages.replaceChildren();
   messages.classList.remove("active");
   welcome.classList.remove("hidden");
@@ -77,6 +96,188 @@ async function refreshDocuments() {
     uploadMessage.textContent = `Could not load documents: ${error.message}`;
     uploadMessage.classList.add("error");
   }
+}
+
+function setConnected(connected) {
+  socketReady = connected;
+  statusDot.classList.toggle("offline", !connected);
+  connectionStatus.textContent = connected ? "Connected" : "Reconnecting...";
+}
+
+function connectSocket() {
+  disconnectSocket();
+  const protocol = location.protocol === "https:" ? "wss" : "ws";
+  const connection = new WebSocket(`${protocol}://${location.host}/ws/chat`);
+  socket = connection;
+
+  connection.addEventListener("open", () => {
+    connection.send(JSON.stringify({ type: "auth", token: accessToken }));
+  });
+  connection.addEventListener("message", (event) => handleSocketMessage(JSON.parse(event.data)));
+  connection.addEventListener("close", (event) => {
+    if (socket !== connection) return;
+    setConnected(false);
+    finishAnswer("The connection was lost. Please try again.");
+    if (event.code === 4401) clearAuthentication();
+    else reconnectTimer = setTimeout(connectSocket, 2000);
+  });
+}
+
+function disconnectSocket() {
+  clearTimeout(reconnectTimer);
+  const connection = socket;
+  socket = null;
+  socketReady = false;
+  if (connection) connection.close();
+}
+
+function handleSocketMessage(data) {
+  if (data.type === "ready") {
+    setConnected(true);
+  } else if (data.type === "sources") {
+    activeSources = data.titles;
+    setPendingText("Reading the relevant sections...");
+  } else if (data.type === "token") {
+    appendToken(data.text);
+  } else if (data.type === "done" || data.type === "stopped") {
+    finishAnswer();
+    if (data.session_id) currentSessionId = data.session_id;
+    refreshSessions();
+  } else if (data.type === "error") {
+    finishAnswer(data.message);
+  }
+}
+
+function setPendingText(text) {
+  if (activeMessage && activeMessage.classList.contains("pending")) {
+    activeMessage.querySelector(".message-content").textContent = text;
+  }
+}
+
+function appendToken(text) {
+  if (!activeMessage) return;
+  const content = activeMessage.querySelector(".message-content");
+  if (activeMessage.classList.contains("pending")) {
+    activeMessage.classList.remove("pending");
+    content.textContent = "";
+  }
+  content.append(text);
+  conversation.scrollTop = conversation.scrollHeight;
+}
+
+function finishAnswer(errorText = null) {
+  if (!activeMessage) return;
+  const content = activeMessage.querySelector(".message-content");
+  if (errorText) {
+    content.textContent = errorText;
+  } else if (activeMessage.classList.contains("pending")) {
+    content.textContent = "Stopped.";
+  } else if (activeSources.length > 0) {
+    const sources = document.createElement("div");
+    sources.className = "message-sources";
+    sources.textContent = `Sources: ${activeSources.join(", ")}`;
+    content.append(sources);
+  }
+  activeMessage.classList.remove("pending");
+  activeMessage = null;
+  activeSources = [];
+  sendButton.hidden = false;
+  stopButton.hidden = true;
+  conversation.scrollTop = conversation.scrollHeight;
+  promptInput.focus();
+}
+
+async function refreshSessions() {
+  if (!accessToken) return;
+  try {
+    const response = await authorizedFetch("/sessions");
+    const data = await responseData(response);
+    if (!response.ok) throw new Error(responseError(data, response.status));
+    renderSessions(data);
+  } catch (error) {
+    sessionList.replaceChildren(sessionNotice(`Could not load conversations: ${error.message}`));
+  }
+}
+
+function sessionNotice(text) {
+  const notice = document.createElement("li");
+  notice.className = "empty-sessions";
+  notice.textContent = text;
+  return notice;
+}
+
+function renderSessions(sessions) {
+  if (sessions.length === 0) {
+    sessionList.replaceChildren(sessionNotice("No conversations yet."));
+    return;
+  }
+
+  sessionList.replaceChildren(
+    ...sessions.map((session) => {
+      const item = document.createElement("li");
+      item.className = `session-item${session.id === currentSessionId ? " active" : ""}`;
+
+      const open = document.createElement("button");
+      open.className = "session-open";
+      open.type = "button";
+      open.textContent = session.title || "Untitled conversation";
+      open.title = open.textContent;
+      open.addEventListener("click", () => openSession(session.id));
+
+      const remove = document.createElement("button");
+      remove.className = "session-delete";
+      remove.type = "button";
+      remove.textContent = "×";
+      remove.setAttribute("aria-label", `Delete ${open.textContent}`);
+      remove.addEventListener("click", () => deleteSession(session.id));
+
+      item.append(open, remove);
+      return item;
+    }),
+  );
+}
+
+async function openSession(sessionId) {
+  if (activeMessage) return;
+  try {
+    const response = await authorizedFetch(`/sessions/${sessionId}/messages`);
+    const data = await responseData(response);
+    if (!response.ok) throw new Error(responseError(data, response.status));
+
+    currentSessionId = sessionId;
+    messages.replaceChildren();
+    revealConversation();
+    for (const message of data) {
+      addMessage("user", message.prompt);
+      addMessage("assistant", message.response);
+    }
+    refreshSessions();
+  } catch (error) {
+    addMessage("assistant", error.message);
+  }
+}
+
+async function deleteSession(sessionId) {
+  if (activeMessage || !confirm("Delete this conversation?")) return;
+  try {
+    const response = await authorizedFetch(`/sessions/${sessionId}`, { method: "DELETE" });
+    if (!response.ok) throw new Error(responseError({}, response.status));
+    if (sessionId === currentSessionId) startNewChat();
+    refreshSessions();
+  } catch (error) {
+    addMessage("assistant", error.message);
+  }
+}
+
+function startNewChat() {
+  if (activeMessage) return;
+  currentSessionId = null;
+  messages.replaceChildren();
+  messages.classList.remove("active");
+  welcome.classList.remove("hidden");
+  uploadMessage.textContent = "";
+  promptInput.focus();
+  refreshSessions();
 }
 
 function updateDocumentPicker(documents) {
@@ -132,38 +333,36 @@ async function responseData(response) {
   }
 }
 
-chatForm.addEventListener("submit", async (event) => {
+chatForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const prompt = promptInput.value.trim();
-  if (!prompt || sendButton.disabled) return;
+  if (!prompt || activeMessage) return;
+  if (!socketReady) {
+    addMessage("assistant", "Not connected yet. Please try again in a moment.");
+    return;
+  }
 
   addMessage("user", prompt);
   promptInput.value = "";
   promptInput.style.height = "auto";
-  sendButton.disabled = true;
-  const pending = addMessage("assistant", "Thinking...", true);
+  sendButton.hidden = true;
+  stopButton.hidden = false;
+  activeMessage = addMessage("assistant", "Searching your documents...", true);
 
-  try {
-    const response = await authorizedFetch("/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        prompt,
-        document_id: documentSelect.value ? Number(documentSelect.value) : null,
-      }),
-    });
-    const data = await responseData(response);
-    if (!response.ok) throw new Error(responseError(data, response.status));
-    pending.querySelector(".message-content").textContent = data.reply;
-    pending.classList.remove("pending");
-  } catch (error) {
-    pending.querySelector(".message-content").textContent = error.message;
-    pending.classList.remove("pending");
-  } finally {
-    sendButton.disabled = false;
-    promptInput.focus();
-  }
+  socket.send(JSON.stringify({
+    type: "question",
+    prompt,
+    document_id: documentSelect.value ? Number(documentSelect.value) : null,
+    session_id: currentSessionId,
+  }));
 });
+
+stopButton.addEventListener("click", () => {
+  socket.send(JSON.stringify({ type: "stop" }));
+  finishAnswer();
+});
+
+newChatButton.addEventListener("click", startNewChat);
 
 promptInput.addEventListener("input", () => {
   promptInput.style.height = "auto";

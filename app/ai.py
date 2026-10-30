@@ -1,6 +1,9 @@
 import hashlib
 import json
 import os
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -35,7 +38,8 @@ class OllamaTimeoutError(TimeoutError):
     pass
 
 
-def _ollama_request(endpoint: str, payload: dict) -> dict:
+@contextmanager
+def _ollama_response(endpoint: str, payload: dict):
     request = Request(
         f"{OLLAMA_BASE_URL}{endpoint}",
         data=json.dumps(payload).encode("utf-8"),
@@ -44,7 +48,7 @@ def _ollama_request(endpoint: str, payload: dict) -> dict:
     )
     try:
         with urlopen(request, timeout=120) as response:
-            return json.loads(response.read().decode("utf-8"))
+            yield response
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Ollama returned HTTP {exc.code}: {detail}") from exc
@@ -59,16 +63,16 @@ def _ollama_request(endpoint: str, payload: dict) -> dict:
         ) from exc
 
 
-def generate_response(
-    prompt: str,
-    context: str | None = None,
-    history: list[dict[str, str]] | None = None,
-) -> str:
-    if AI_PROVIDER == "mock":
-        if context:
-            return f"[mock reply] Using context: {context[:60]}... | You said: {prompt}"
-        return f"[mock reply] You said: {prompt}"
+def _ollama_request(endpoint: str, payload: dict) -> dict:
+    with _ollama_response(endpoint, payload) as response:
+        return json.loads(response.read().decode("utf-8"))
 
+
+def _chat_messages(
+    prompt: str,
+    context: str | None,
+    history: list[dict[str, str]] | None,
+) -> list[dict[str, str]]:
     system_content = (
         "You answer questions about the user's uploaded documents. The retrieved document context is "
         "the sole source of truth for facts about those documents. Conversation history is only for "
@@ -88,35 +92,82 @@ def generate_response(
             f"{context}\n\nQuestion: {prompt}"
         )
 
-    conversation_messages = history or []
+    return [
+        {"role": "system", "content": system_content},
+        *(history or []),
+        {"role": "user", "content": user_content},
+    ]
+
+
+def _ollama_chat_payload(messages: list[dict[str, str]], stream: bool) -> dict:
+    return {
+        "model": OLLAMA_CHAT_MODEL,
+        "messages": messages,
+        "stream": stream,
+        "keep_alive": OLLAMA_KEEP_ALIVE,
+        "options": {"temperature": 0.2, "num_predict": OLLAMA_MAX_TOKENS},
+    }
+
+
+def generate_response(
+    prompt: str,
+    context: str | None = None,
+    history: list[dict[str, str]] | None = None,
+) -> str:
+    if AI_PROVIDER == "mock":
+        if context:
+            return f"[mock reply] Using context: {context[:60]}... | You said: {prompt}"
+        return f"[mock reply] You said: {prompt}"
+
+    messages = _chat_messages(prompt, context, history)
     if AI_PROVIDER == "ollama":
-        response = _ollama_request(
-            "/api/chat",
-            {
-                "model": OLLAMA_CHAT_MODEL,
-                "messages": [
-                    {"role": "system", "content": system_content},
-                    *conversation_messages,
-                    {"role": "user", "content": user_content},
-                ],
-                "stream": False,
-                "keep_alive": OLLAMA_KEEP_ALIVE,
-                "options": {"temperature": 0.2, "num_predict": OLLAMA_MAX_TOKENS},
-            },
-        )
+        response = _ollama_request("/api/chat", _ollama_chat_payload(messages, stream=False))
         return response["message"]["content"].strip()
 
     response = client.chat.completions.create(
         model=OPENAI_CHAT_MODEL,
-        messages=[
-            {"role": "system", "content": system_content},
-            *conversation_messages,
-            {"role": "user", "content": user_content},
-        ],
+        messages=messages,
         max_tokens=300,
         temperature=0.7,
     )
     return response.choices[0].message.content.strip()
+
+
+def stream_response(
+    prompt: str,
+    context: str | None = None,
+    history: list[dict[str, str]] | None = None,
+) -> Iterator[str]:
+    if AI_PROVIDER == "mock":
+        for word in f"[mock reply] You said: {prompt}".split():
+            time.sleep(0.05)
+            yield f"{word} "
+        return
+
+    messages = _chat_messages(prompt, context, history)
+    if AI_PROVIDER == "ollama":
+        with _ollama_response("/api/chat", _ollama_chat_payload(messages, stream=True)) as response:
+            # Ollama sends one JSON object per line, each holding the next piece of the answer.
+            for line in response:
+                chunk = json.loads(line)
+                if "error" in chunk:
+                    raise RuntimeError(f"Ollama failed while answering: {chunk['error']}")
+                text = chunk.get("message", {}).get("content")
+                if text:
+                    yield text
+        return
+
+    stream = client.chat.completions.create(
+        model=OPENAI_CHAT_MODEL,
+        messages=messages,
+        max_tokens=300,
+        temperature=0.7,
+        stream=True,
+    )
+    for chunk in stream:
+        text = chunk.choices[0].delta.content if chunk.choices else None
+        if text:
+            yield text
 
 
 def _embed_batch(texts: list[str]) -> list[list[float]]:

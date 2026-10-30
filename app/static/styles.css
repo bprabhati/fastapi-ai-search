@@ -42,6 +42,8 @@ label {
 .sidebar {
   position: relative;
   display: flex;
+  height: 100vh;
+  height: 100dvh;
   flex: 0 0 270px;
   flex-direction: column;
   padding: 27px 19px 20px;
@@ -117,32 +119,72 @@ label {
   font-size: 10px;
 }
 
-.sidebar-tip {
-  display: flex;
-  gap: 10px;
-  margin-top: 24px;
-  padding: 13px 11px;
-  border-radius: 11px;
-  background: #f7f8fb;
+.session-label {
+  margin-top: 28px;
 }
 
-.tip-icon {
+.session-list {
   display: grid;
-  width: 18px;
-  height: 18px;
-  flex: none;
-  place-items: center;
-  border: 1px solid #a6adbc;
-  border-radius: 50%;
-  color: #858da0;
-  font-size: 11px;
+  min-height: 0;
+  flex: 1;
+  align-content: start;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
 }
 
-.sidebar-tip p {
-  margin: 1px 0 0;
-  color: #687185;
+.session-item {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  border-radius: 8px;
+}
+
+.session-item:hover,
+.session-item.active {
+  background: #f3f2ff;
+}
+
+.session-open {
+  overflow: hidden;
+  min-width: 0;
+  flex: 1;
+  padding: 8px;
+  border: 0;
+  color: #596276;
+  background: none;
+  cursor: pointer;
   font-size: 11px;
-  line-height: 1.55;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-item.active .session-open {
+  color: var(--purple-dark);
+  font-weight: 650;
+}
+
+.session-delete {
+  flex: none;
+  padding: 4px 8px;
+  border: 0;
+  color: #a6adbc;
+  background: none;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.session-delete:hover {
+  color: #bc3e56;
+}
+
+.empty-sessions {
+  padding: 8px;
+  color: #929aab;
+  font-size: 11px;
 }
 
 .sidebar-footer {
@@ -161,6 +203,11 @@ label {
   border-radius: 50%;
   background: #40b78a;
   box-shadow: 0 0 0 3px #40b78a1c;
+}
+
+.status-dot.offline {
+  background: #c2c7d2;
+  box-shadow: none;
 }
 
 .main-panel {
@@ -667,6 +714,21 @@ h1 span {
 .send-button:disabled {
   cursor: wait;
   opacity: 0.65;
+}
+
+.send-button[hidden] {
+  display: none;
+}
+
+.stop-button,
+.stop-button:hover:not(:disabled) {
+  background: #596276;
+}
+
+.message-sources {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .disclaimer {

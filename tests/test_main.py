@@ -1,10 +1,12 @@
 import os
 import json
+import threading
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 os.environ.setdefault("JWT_SECRET", "test-secret-that-is-at-least-32-bytes-long")
 
+from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 from io import BytesIO
 from types import SimpleNamespace
@@ -240,6 +242,47 @@ def test_ollama_request_reports_timeout(monkeypatch):
         ai._ollama_request("/api/chat", {})
 
 
+def test_ollama_stream_yields_each_piece_of_the_answer(monkeypatch):
+    lines = [
+        json.dumps({"message": {"content": "Hello"}}).encode() + b"\n",
+        json.dumps({"message": {"content": " world"}}).encode() + b"\n",
+        json.dumps({"message": {"content": ""}, "done": True}).encode() + b"\n",
+    ]
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return iter(lines)
+
+        def __exit__(self, *args):
+            return None
+
+    def fake_urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data)
+        return FakeResponse()
+
+    monkeypatch.setattr(ai, "AI_PROVIDER", "ollama")
+    monkeypatch.setattr(ai, "urlopen", fake_urlopen)
+
+    assert list(ai.stream_response("Hi", context="CV")) == ["Hello", " world"]
+    assert captured["payload"]["stream"] is True
+
+
+def test_ollama_stream_raises_when_ollama_reports_an_error(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return iter([json.dumps({"error": "out of memory"}).encode() + b"\n"])
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(ai, "AI_PROVIDER", "ollama")
+    monkeypatch.setattr(ai, "urlopen", lambda request, timeout: FakeResponse())
+
+    with pytest.raises(RuntimeError, match="out of memory"):
+        list(ai.stream_response("Hi", context="CV"))
+
+
 def test_agent_uses_plain_rag_for_ollama(monkeypatch):
     monkeypatch.setattr(ai, "AI_PROVIDER", "ollama")
     monkeypatch.setattr(agent, "_search_knowledge_base", lambda db, user_id, query: "CV context")
@@ -330,6 +373,126 @@ def test_password_hash_is_verified_without_storing_plaintext():
     assert password_hash != "secret123"
     assert verify_password("secret123", password_hash)
     assert not verify_password("wrong-password", password_hash)
+
+
+@pytest.fixture
+def signed_in_socket(monkeypatch):
+    monkeypatch.setattr(main, "_socket_user_id", lambda token: 1)
+    saved = {}
+    monkeypatch.setattr(crud, "create_chat_session", lambda db, user_id, title: SimpleNamespace(id=5))
+
+    def fake_create_chat_message(db, user_id, prompt, response, session_id=None):
+        saved.update(user_id=user_id, reply=response, session_id=session_id)
+
+    monkeypatch.setattr(crud, "create_chat_message", fake_create_chat_message)
+    with client.websocket_connect("/ws/chat") as websocket:
+        websocket.send_json({"type": "auth", "token": "valid"})
+        assert websocket.receive_json() == {"type": "ready"}
+        yield websocket, saved
+
+
+def test_chat_socket_rejects_invalid_token():
+    with client.websocket_connect("/ws/chat") as websocket:
+        websocket.send_json({"type": "auth", "token": "invalid-token"})
+        with pytest.raises(WebSocketDisconnect) as closed:
+            websocket.receive_json()
+
+    assert closed.value.code == main.SOCKET_UNAUTHORIZED
+
+
+def test_chat_socket_streams_tokens_and_saves_the_answer(monkeypatch, signed_in_socket):
+    websocket, saved = signed_in_socket
+    monkeypatch.setattr(main, "_prepare_socket_answer", lambda user_id, message: ([], "CV", ["My CV"]))
+    monkeypatch.setattr(
+        ai,
+        "stream_response",
+        lambda prompt, context=None, history=None: iter(["Hello ", "world"]),
+    )
+
+    websocket.send_json({"type": "question", "prompt": "Hi"})
+
+    assert websocket.receive_json() == {"type": "sources", "titles": ["My CV"]}
+    assert websocket.receive_json() == {"type": "token", "text": "Hello "}
+    assert websocket.receive_json() == {"type": "token", "text": "world"}
+    assert websocket.receive_json() == {"type": "done", "session_id": 5}
+    assert saved == {"user_id": 1, "reply": "Hello world", "session_id": 5}
+
+
+def test_chat_socket_stop_keeps_the_partial_answer(monkeypatch, signed_in_socket):
+    websocket, saved = signed_in_socket
+    release = threading.Event()
+
+    def slow_stream(prompt, context=None, history=None):
+        yield "Partial "
+        release.wait(5)
+        yield "never sent"
+
+    monkeypatch.setattr(main, "_prepare_socket_answer", lambda user_id, message: ([], "CV", []))
+    monkeypatch.setattr(ai, "stream_response", slow_stream)
+
+    websocket.send_json({"type": "question", "prompt": "Hi"})
+    assert websocket.receive_json()["type"] == "sources"
+    assert websocket.receive_json() == {"type": "token", "text": "Partial "}
+
+    websocket.send_json({"type": "stop"})
+
+    assert websocket.receive_json() == {"type": "stopped", "session_id": 5}
+    assert saved["reply"] == "Partial "
+    release.set()
+
+
+def test_chat_socket_refuses_another_users_conversation(monkeypatch, signed_in_socket):
+    websocket, saved = signed_in_socket
+    monkeypatch.setattr(crud, "get_chat_session", lambda db, session_id, user_id: None)
+    monkeypatch.setattr(
+        ai,
+        "generate_embedding",
+        lambda prompt: pytest.fail("Search should not run for someone else's conversation"),
+    )
+
+    websocket.send_json({"type": "question", "prompt": "Hi", "session_id": 99})
+
+    assert websocket.receive_json() == {
+        "type": "error",
+        "message": "That conversation no longer exists.",
+    }
+    assert saved == {}
+
+
+def test_chat_socket_reports_model_failure_without_saving(monkeypatch, signed_in_socket):
+    websocket, saved = signed_in_socket
+
+    def failed_prepare(user_id, message):
+        raise RuntimeError("Could not reach Ollama")
+
+    monkeypatch.setattr(main, "_prepare_socket_answer", failed_prepare)
+
+    websocket.send_json({"type": "question", "prompt": "Hi"})
+
+    assert websocket.receive_json() == {"type": "error", "message": "Could not reach Ollama"}
+    assert saved == {}
+
+
+def test_session_messages_hidden_from_other_users(monkeypatch, authenticated_user):
+    monkeypatch.setattr(crud, "get_chat_session", lambda db, session_id, user_id: None)
+
+    assert client.get("/sessions/99/messages").status_code == 404
+    assert client.delete("/sessions/99").status_code == 404
+
+
+def test_list_sessions_returns_current_users_conversations(monkeypatch, authenticated_user):
+    queried = []
+
+    def fake_list_chat_sessions(db, user_id):
+        queried.append(user_id)
+        return [SimpleNamespace(id=3, title="About my CV")]
+
+    monkeypatch.setattr(crud, "list_chat_sessions", fake_list_chat_sessions)
+
+    response = client.get("/sessions")
+
+    assert response.json() == [{"id": 3, "title": "About my CV"}]
+    assert queried == [1]
 
 
 def test_chat_requires_authentication():

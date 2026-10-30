@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -35,6 +35,33 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
+
+
+class ChatSessionRead(BaseModel):
+    id: int
+    title: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ChatMessageRead(BaseModel):
+    id: int
+    prompt: str
+    response: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SocketAuth(BaseModel):
+    type: Literal["auth"]
+    token: str
+
+
+class SocketMessage(BaseModel):
+    type: Literal["question", "stop"]
+    prompt: str = Field(default="", max_length=4000)
+    document_id: Optional[int] = None
+    session_id: Optional[int] = None
 
 
 class DocumentCreate(BaseModel):
