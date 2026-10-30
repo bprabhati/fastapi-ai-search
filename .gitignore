@@ -6,6 +6,7 @@ __pycache__/
 .Python
 .env
 .env.*
+*.dump
 .venv/
 __pypackages__/
 htmlcov/

@@ -11,6 +11,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(128), unique=True, nullable=False, index=True)
     email = Column(String(256), unique=True, nullable=True, index=True)
+    password_hash = Column(String(256), nullable=True)
 
     documents = relationship("Document", back_populates="user", cascade="all, delete-orphan")
     chats = relationship("ChatMessage", back_populates="user", cascade="all, delete-orphan")
@@ -39,7 +40,7 @@ class DocumentChunk(Base):
     document_id = Column(Integer, ForeignKey("documents.id"), nullable=False)
     chunk_index = Column(Integer, nullable=False)
     content = Column(Text, nullable=False)
-    embedding = Column(Vector(1536), nullable=True)
+    embedding = Column(Vector(), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     document = relationship("Document", back_populates="chunks")  

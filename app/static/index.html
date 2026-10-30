@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f5f7fb" />
+    <title>Knowledge Chat</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="/static/chat.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="/" aria-label="Knowledge Chat home">
+          <span class="brand-mark" aria-hidden="true">K</span>
+          <span>Knowwise</span>
+        </a>
+
+        <div class="sidebar-label">YOUR WORKSPACE</div>
+        <div class="workspace-card">
+          <span class="workspace-icon" aria-hidden="true">✦</span>
+          <span>
+            <strong>My knowledge base</strong>
+            <small>Ask questions about your files</small>
+          </span>
+        </div>
+
+        <div class="sidebar-tip">
+          <span class="tip-icon" aria-hidden="true">i</span>
+          <p>Upload a PDF or Word document, then ask a question about its contents.</p>
+        </div>
+
+        <div class="sidebar-footer">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span>Connected to your local app</span>
+        </div>
+      </aside>
+
+      <main class="main-panel">
+        <header class="topbar">
+          <div class="mobile-brand">
+            <span class="brand-mark" aria-hidden="true">K</span>
+            <span>Knowwise</span>
+          </div>
+          <span class="topbar-label">DOCUMENT ASSISTANT</span>
+          <div class="topbar-actions">
+            <span class="profile-name" id="profile-name"></span>
+            <button class="logout-button" id="logout-button" type="button" hidden>Log out</button>
+          </div>
+        </header>
+
+        <section class="conversation" aria-label="Chat conversation">
+          <section class="auth-panel" id="auth-panel" aria-labelledby="auth-title">
+            <div class="welcome-mark" aria-hidden="true">✦</div>
+            <p class="eyebrow">YOUR PERSONAL KNOWLEDGE ASSISTANT</p>
+            <h1 id="auth-title">Welcome <span>back.</span></h1>
+            <p class="welcome-copy" id="auth-copy">Sign in to chat with your private documents.</p>
+            <form class="auth-form" id="auth-form">
+              <label id="name-field" class="auth-field" hidden>
+                <span>Your name</span>
+                <input id="auth-name" name="name" autocomplete="name" maxlength="128" />
+              </label>
+              <label class="auth-field">
+                <span>Email</span>
+                <input id="auth-email" name="email" type="email" autocomplete="email" required />
+              </label>
+              <label class="auth-field">
+                <span>Password</span>
+                <input id="auth-password" name="password" type="password" autocomplete="current-password" minlength="8" maxlength="128" required />
+              </label>
+              <button class="auth-submit" id="auth-submit" type="submit">Sign in</button>
+            </form>
+            <p class="auth-error" id="auth-error" role="alert"></p>
+            <p class="auth-toggle">
+              <span id="auth-toggle-copy">New here?</span>
+              <button type="button" id="auth-toggle-button">Create an account</button>
+            </p>
+          </section>
+
+          <div class="welcome" id="welcome">
+            <div class="welcome-mark" aria-hidden="true">✦</div>
+            <h1>Make your documents<br /><span>easy to talk to.</span></h1>
+            <p class="welcome-copy">Upload a PDF or Word file, then ask questions about it.</p>
+
+            <form class="upload-card" id="upload-form">
+              <div class="upload-symbol" aria-hidden="true">↑</div>
+              <div class="upload-copy">
+                <strong id="file-label">Add a document</strong>
+                <span id="upload-status">PDF or Word file</span>
+              </div>
+              <label class="file-button" for="file-input">Choose file</label>
+              <input id="file-input" name="file" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" required />
+            </form>
+            <p class="upload-message" id="upload-message" role="status" aria-live="polite"></p>
+
+
+            <div class="suggestions" aria-label="Example questions">
+              <span>TRY ASKING</span>
+              <button type="button" data-prompt="What is this document about?">What is this document about?</button>
+              <button type="button" data-prompt="Summarize the key points of this document.">Summarize the key points</button>
+            </div>
+          </div>
+
+          <div class="messages" id="messages" role="log" aria-live="polite" aria-relevant="additions"></div>
+        </section>
+
+        <footer class="composer-area">
+          <label class="document-picker" id="document-picker" hidden>
+            <span>Search in</span>
+            <select id="document-select">
+              <option value="">All documents</option>
+            </select>
+          </label>
+          <form class="composer" id="chat-form">
+            <label class="visually-hidden" for="prompt-input">Your question</label>
+            <textarea id="prompt-input" rows="1" placeholder="Ask a question about your documents..." required></textarea>
+            <button class="send-button" id="send-button" type="submit" aria-label="Send message">
+              <span>Send</span><span aria-hidden="true">↑</span>
+            </button>
+          </form>
+          <p class="disclaimer">Check important details against the original document.</p>
+        </footer>
+      </main>
+    </div>
+  </body>
+</html>

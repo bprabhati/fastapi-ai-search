@@ -5,6 +5,7 @@ __pycache__/
 .Python
 .env
 .env.*
+*.dump
 __pypackages__/
 *.egg-info/
 .venv/
